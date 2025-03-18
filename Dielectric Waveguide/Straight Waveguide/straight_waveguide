@@ -1,0 +1,131 @@
+using Plots
+
+function run_fdtd_dielectric_waveguide_simulation()
+    # ---------------------------
+    # Simulation and Grid Setup
+    # ---------------------------
+    c = 1.0                         # Speed in vacuum (normalized)
+    x_min, x_max = 0.0, 100.0
+    y_min, y_max = -30.0, 30.0        # Environment spans from -30 to 30 in y
+
+    dx = 0.1
+    dy = 0.1
+    nx = Int(round((x_max - x_min) / dx)) + 1
+    ny = Int(round((y_max - y_min) / dy)) + 1
+
+    x = range(x_min, x_max, length=nx)
+    y = range(y_min, y_max, length=ny)
+
+    # ---------------------------
+    # CFL Condition: Adaptive dt
+    # ---------------------------
+    cfl = 0.9999999  
+    dt = cfl * dx / (c * sqrt(2))
+    println("Adaptive dt based on CFL condition: ", dt)
+
+    nsteps = 3000  # Total number of time steps for the simulation
+
+    # ---------------------------
+    # Define Dielectric Profile
+    # ---------------------------
+    # Cladding: ε = 1 everywhere; Core (|y| ≤ 5): ε = 2.56.
+    eps = ones(Float64, nx, ny)
+    core_eps = 2.56
+    for j in 1:ny
+        if abs(y[j]) <= 5
+            eps[:, j] .= core_eps
+        end
+    end
+
+    # ---------------------------
+    # Field Initialization
+    # ---------------------------
+    Ez_old = zeros(Float64, nx, ny)  # Field at time step n-1
+    Ez     = zeros(Float64, nx, ny)  # Field at time step n
+    Ez_new = zeros(Float64, nx, ny)  # Field at time step n+1
+
+    # Precompute finite-difference coefficients (to be divided by ε locally)
+    Cx = (c * dt / dx)^2
+    Cy = (c * dt / dy)^2
+
+    # ---------------------------
+    # Source Parameters (Plane Wave with Mode Matched Injection)
+    # ---------------------------
+    # Angular frequency (carrier)
+    omega = 2π * 0.1
+
+    # ---------------------------
+    # Prepare Animation
+    # ---------------------------
+    anim = Animation()
+
+    # ---------------------------
+    # Simulation Loop
+    # ---------------------------
+    for n in 1:nsteps
+        t = n * dt
+
+        # Update interior grid points using the finite-difference scheme
+        @inbounds for i in 2:nx-1
+            for j in 2:ny-1
+                Ez_new[i, j] = 2 * Ez[i, j] - Ez_old[i, j] +
+                    (Cx/eps[i, j]) * (Ez[i+1, j] - 2 * Ez[i, j] + Ez[i-1, j]) +
+                    (Cy/eps[i, j]) * (Ez[i, j+1] - 2 * Ez[i, j] + Ez[i, j-1])
+            end
+        end
+
+        # ---------------------------
+        # Left Boundary Conditions (Plane Wave with Mode Matched Injection)
+        # ---------------------------
+        alpha = (c * dt - dx) / (c * dt + dx)
+        for j in 2:ny-1
+            if abs(y[j]) <= 5
+                # Inject a plane wave modulated by the TE₀ mode profile (cosine shape)
+                Ez_new[1, j] = sin(omega * t) * cos((π/2) * (y[j] / 5))
+            else
+                Ez_new[1, j] = Ez[2, j] + alpha * (Ez_new[2, j] - Ez[1, j])
+            end
+        end
+
+        # ---------------------------
+        # Right Boundary Condition (Mur)
+        # ---------------------------
+        for j in 2:ny-1
+            Ez_new[nx, j] = Ez[nx-1, j] + alpha * (Ez_new[nx-1, j] - Ez[nx, j])
+        end
+
+        # ---------------------------
+        # Mur Boundary Conditions for y boundaries
+        # ---------------------------
+        beta = (c * dt - dy) / (c * dt + dy)
+        for i in 2:nx-1
+            # Bottom boundary
+            Ez_new[i, 1] = Ez[i, 2] + beta * (Ez_new[i, 2] - Ez[i, 1])
+            # Top boundary
+            Ez_new[i, ny] = Ez[i, ny-1] + beta * (Ez_new[i, ny-1] - Ez[i, ny])
+        end
+
+        # Advance to next time step
+        Ez_old .= Ez
+        Ez .= Ez_new
+
+        # Record Frame Every 2 Simulation Steps
+        if mod(n, 3) == 0
+            p = heatmap(x, y, Ez', aspect_ratio=1,
+                clims=(-0.1, 0.1), color=:RdBu,
+                xlabel="x", ylabel="y",
+                title="2D FDTD Dielectric Waveguide Simulation\n(Plane Wave: Mode Matched Injection), t = $(round(t, digits=2))",
+                xlims=(x_min, x_max), ylims=(y_min, y_max))
+            # Overlay the dielectric core boundaries (red lines at y = -5 and y = 5)
+            plot!(p, [x_min, x_max], [-5, -5], lw=2, color=:red, label="Dielectric Boundaries")
+            plot!(p, [x_min, x_max], [5, 5], lw=2, color=:red, label="")
+            frame(anim, p)
+        end
+    end
+
+    # Save the animation as a GIF (adjust fps as desired)
+    gif(anim, "fdtd_dielectric_waveguide_plane_wave_mode_matched.gif", fps=30)
+end
+
+# Run the simulation with accelerated animation playback
+run_fdtd_dielectric_waveguide_simulation()
